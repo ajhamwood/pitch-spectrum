@@ -4,49 +4,40 @@
   <title>Pitch class spectral visualiser</title>
   <meta charset='UTF-8'>
   <meta name='viewport' content='width=device-width, initial-scale=1'>
-  <meta name='keywords' content='key, words'>
-  <meta name='description' content='Description.'>
+  <meta name='keywords' content='equaliser, spectrogram, visualiser, pitch classes, microtonal'>
+  <meta name='description' content='An audio spectrogram of sounds picked up through your microphone, ordered by microtonal pitch classes.'>
   <link rel='icon' type='image/x-icon' href='data:image/x-icon;base64,'>
-  <link rel='stylesheet' href='style.css'>
+  <link rel='stylesheet' href='font.css'>
   <style>
     html, head, body {
       height: 100%;
+      background: #1d4877;
+      margin: 0;
       overflow: hidden }
-    #toggle { display: inline }
+    #ui {
+      display: flex;
+      border: none;
+      color: #ddd }
+    #ui > * { font-family: D-DINExp, sans }
+    #title {
+      flex: 1;
+      font-size: x-large }
+    #scale { margin: 0 .5em }
     #scale::before { content: 'Scale:' }
-    .row * { display: inline }
-    #results > * {
-      display: inline-block;
-      vertical-align: top }
-    #bins {
-      margin-top: 18pt;
-      width: 10em }
-    #pitch-list-label {
-      font-style: italic;
-      margin-bottom: .5rem }
   </style>
 </head>
 <body>
-  <h1>Pitch class spectral visualiser</h1>
-  <button id='toggle'>Start</button>
-  <select name='scale' id='scale'>
-    <option value='12edo'>12edo</option>
-    <option value='22edo'>22edo</option>
-    <option value='31edo'>31edo</option>
-    <option value='53edo'>53edo</option>
-  </select>
-  <div id='results'>
-    <div id='bins'>
-      <div id='pitch-list-label'>Significant pitches</div>
-    </div>
-    <canvas id='heatmap'></canvas>
-  </div>
-  <template id='row'>
-    <div class='row'>
-      <div class='note'></div>
-      <div class='volume'></div>
-    </div>
-  </template>
+  <fieldset id='ui'>
+    <div id='title'>Pitch class spectral visualiser</div>
+    <select name='scale' id='scale'>
+      <option value='12edo'>12 EDO</option>
+      <option value='22edo'>22 EDO</option>
+      <option value='31edo'>31 EDO</option>
+      <option value='53edo'>53 EDO</option>
+    </select>
+    <button id='toggle'>Start</button>
+  </fieldset>
+  <canvas id='heatmap'></canvas>
   <script src='machine.js'></script>
   <script>
 // Page state
@@ -72,18 +63,7 @@ var app = new $.Machine({
     };
 
 function heatmapColour (val) {
-  // let data = [
-  //       [0, 255, 255, 255],
-  //       [128, 255, 0, 0],
-  //       [255, 0, 0, 0]
-  //     ];
-  let data = [
-    [0, 29, 72, 119],
-    [64, 27, 138, 90],
-    [128, 251, 176, 33],
-    [192, 246, 136, 56],
-    [255, 238, 62, 50]
-  ];
+  let data = [ [0, 29, 72, 119], [64, 27, 138, 90], [128, 251, 176, 33], [192, 246, 136, 56], [255, 238, 62, 50] ];
   let initIndex = data.findIndex(x => x[0] >= val);
   if (data[initIndex][0] === val) return data[initIndex].slice(1);
   else {
@@ -101,8 +81,8 @@ $.targets({
   app: {
     initCanvas () {
       let canvas = this.canvas = $('canvas')[0];
-      canvas.width = document.body.offsetWidth - $('#bins')[0].offsetWidth - 6;
-      canvas.height = document.body.offsetHeight * 2 / 3;
+      canvas.width = document.body.offsetWidth;
+      canvas.height = document.body.offsetHeight - 2 * $('#ui')[0].getBoundingClientRect().height;
       this.canvasCtx = canvas.getContext('2d');
       this.canvasCtx.lineWidth = 1
     },
@@ -125,22 +105,13 @@ $.targets({
       source.connect(analyser);
       let bufferLength = analyser.frequencyBinCount,
           dataArray = new Uint8Array(bufferLength),
-          c = Math.log2(this.audioCtx.sampleRate / bufferLength / 440) +
-            pitchClasses.indexOf('A') / pitchClasses.length,
           loop = () => {
             analyser.getByteFrequencyData(dataArray);
             let res = dataArray.reduce((a, b, i) =>
               (a.splice(a.findIndex(x => x[0] < b), 0, [b, i]), a.slice(0, -1)),
               Array(this.bins + 1).fill([0, -1]));
-            $('div.row').forEach((el, i) => {
-              let [vol, bin] = res[i];
-              $('.note', el)[0].textContent = pitchClasses[Math.round((Math.log2(bin + .5) + c + 10) *
-                pitchClasses.length) % pitchClasses.length] + Math.floor(Math.log2(bin + .5) + c + 4);
-              $('.volume', el)[0].textContent = (analyser.minDecibels +
-                (analyser.maxDecibels - analyser.minDecibels) * vol / 255).toPrecision(3) + 'dB'
-            });
-            app.emit('updateHeatmap', dataArray);
-            if (this.flag) setTimeout(loop, 100);
+            app.emit('updateHeatmap', bufferLength, dataArray);
+            if (this.flag) requestAnimationFrame(loop);
             else {
               this.audioCtx.close();
               this.audioCtx = null
@@ -149,19 +120,18 @@ $.targets({
       loop()
     },
     finishAnalyse () { this.flag = false },
-    updateHeatmap (dataArray) {
+    updateHeatmap (bufferLength, dataArray) {
       let { width, height } = this.canvas;
       this.canvasCtx.fillStyle = '#1d4877';
       this.canvasCtx.fillRect(0, 0, width, height);
       if (dataArray) {
-        let bufferLength = 16384,
-            c = Math.log2(this.audioCtx.sampleRate / bufferLength / 440) +
-              pitchClasses.indexOf('A') / pitchClasses.length;
+        let c = Math.log2(this.audioCtx.sampleRate / bufferLength / 440) +
+              pitchClasses.indexOf('A') / pitchClasses.length + 4;
         for (let bin = 1; bin < bufferLength; bin++) {
           if (!dataArray[bin]) continue;
-          let octave = Math.floor(Math.log2(bin + .5) + c + 4),
-              pitch0 = Math.log2(bin) + c - octave + 4,
-              pitch1 = Math.log2(bin + 1) + c - octave + 4,
+          let octave = Math.floor(Math.log2(bin + .5) + c),
+              pitch0 = Math.log2(bin) + c - octave,
+              pitch1 = Math.log2(bin + 1) + c - octave,
               [red, green, blue] = heatmapColour(dataArray[bin]);
           this.canvasCtx.fillStyle = `rgb(${red}, ${green}, ${blue})`;
           this.canvasCtx.fillRect(width / 6 + width * 2 / 3 * pitch0, height - 28 - octave * (height - 56) / 11 - .25,
@@ -172,16 +142,16 @@ $.targets({
             width * 2 / 3 * (pitch1 - pitch0) + .5, (height - 56) / 11)
         }
       }
-      this.canvasCtx.font = '18pt sans-serif';
+      this.canvasCtx.font = '18pt D-DINExp';
       this.canvasCtx.fillStyle = '#ddd';
       this.canvasCtx.fillText('C10', width / 6 - 10 - this.canvasCtx.measureText('C10').width, 24);
       this.canvasCtx.fillText('C0', width / 6 - 10 - this.canvasCtx.measureText('C0').width, height - 4);
-      this.canvasCtx.font = '12pt sans-serif';
+      this.canvasCtx.font = '12pt D-DINExp';
       for (let i = 0; i <= pitchClasses.length; i++) {
         this.canvasCtx.fillText(pitchClasses[i % pitchClasses.length], width / 6 + width * 2 / 3 * i / pitchClasses.length -
           this.canvasCtx.measureText(pitchClasses[i % pitchClasses.length]).width / 2, height - 12);
       }
-      this.canvasCtx.strokeStyle = '#888';
+      this.canvasCtx.strokeStyle = '#fff6';
       this.canvasCtx.beginPath();
       for (let i = 1; i <= 10; i++) {
         this.canvasCtx.moveTo(width / 6, 28 + i * (height - 56) / 11);
@@ -189,14 +159,14 @@ $.targets({
       }
       this.canvasCtx.stroke();
       for (let i = Math.ceil(-pitchClasses.length * .1); i < pitchClasses.length * 1.1; i++) {
-        if (i < 0 || i >= pitchClasses.length) this.canvasCtx.strokeStyle = '#bbb';
-        else this.canvasCtx.strokeStyle = '#888';
+        if (i < 0 || i >= pitchClasses.length) this.canvasCtx.strokeStyle = '#fff3';
+        else this.canvasCtx.strokeStyle = '#fff6';
         this.canvasCtx.beginPath();
         this.canvasCtx.moveTo(width / 6 + width * 2 / 3 * i / pitchClasses.length, 28);
         this.canvasCtx.lineTo(width / 6 + width * 2 / 3 * i / pitchClasses.length, height - 28);
         this.canvasCtx.stroke();
       }
-      this.canvasCtx.strokeStyle = '#888';
+      this.canvasCtx.strokeStyle = '#fff6';
       this.canvasCtx.strokeRect(width / 6, 28, width * 2 / 3, height - 56);
     }
   }
@@ -215,9 +185,7 @@ $.queries({
     }
   },
   "select#scale": {
-    change () {
-      app.emit('selectScale', this.value);
-    }
+    change () { app.emit('selectScale', this.value) }
   }
 })
 
