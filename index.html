@@ -1,43 +1,82 @@
 <!doctype html>
 <html>
 <head>
-  <title>Pitch class spectral visualiser</title>
+  <title>Spectre. A microtonal pitch class spectral visualiser</title>
   <meta charset='UTF-8'>
   <meta name='viewport' content='width=device-width, initial-scale=1'>
   <meta name='keywords' content='equaliser, spectrogram, visualiser, pitch classes, microtonal'>
   <meta name='description' content='An audio spectrogram of sounds picked up through your microphone, ordered by microtonal pitch classes.'>
-  <link rel='icon' type='image/x-icon' href='data:image/x-icon;base64,'>
-  <link rel='stylesheet' href='font.css'>
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16x16.png">
+  <link rel='icon' type='image/x-icon' href='icons/favicon.ico'>
+  <link rel='stylesheet' href='fonts.css'>
   <style>
     html, head, body {
       height: 100%;
       background: #1d4877;
       margin: 0;
-      overflow: hidden }
-    #ui {
-      display: flex;
-      border: none;
+      overflow: hidden;
+      font-family: Lato, sans;
       color: #ddd }
-    #ui > * { font-family: D-DINExp, sans }
+    body {
+      display: flex;
+      flex-flow: column }
+    header {
+      display: flex;
+      align-items: last baseline;
+      padding: .5em 1em }
     #title {
+      flex: 0;
+      font-family: Semi-Coder, sans;
+      font-size: xx-large;
+      padding-right: 1em }
+    #tagline {
       flex: 1;
-      font-size: x-large }
-    #scale { margin: 0 .5em }
-    #scale::before { content: 'Scale:' }
+      height: min-content;
+      color: #ddd8 }
+    main {
+      display: flex;
+      flex: 1;
+      align-items: start }
+    #ui { padding: .5em 1em }
+    #ui > input[type='radio'] { display: none }
+    #ui > input[type='radio'] + label,
+    #toggleAudio {
+      display: block;
+      padding: .3em .5em;
+      margin-bottom: .3em;
+      cursor: pointer }
+    #ui > input[type='radio']:not(:checked) + label:hover,
+    #toggleAudio:hover { background-color: #183c62 }
+    #ui > input[type='radio']:checked + label {
+      background-color: #fff;
+      color: #1d4877 }
+    #canvasWrapper { position: relative }
+    #grid {
+      position: absolute;
+      top: 0;
+      left: 0 }
   </style>
 </head>
 <body>
-  <fieldset id='ui'>
-    <div id='title'>Pitch class spectral visualiser</div>
-    <select name='scale' id='scale'>
-      <option value='12edo'>12 EDO</option>
-      <option value='22edo'>22 EDO</option>
-      <option value='31edo'>31 EDO</option>
-      <option value='53edo'>53 EDO</option>
-    </select>
-    <button id='toggle'>Start</button>
-  </fieldset>
-  <canvas id='heatmap'></canvas>
+  <header>
+    <div id='title'>Spectre.</div>
+    <div id='tagline'>Microtonal pitch class spectral visualiser<br/>Choose a scale and let me analyse some sound</div>
+  </header>
+  <main>
+    <form id='ui'>
+      <input type="radio" name="scales" id="12edo" checked/><label for="12edo">12EDO</label>
+      <input type="radio" name="scales" id="22edo"/><label for="22edo">22EDO</label>
+      <input type="radio" name="scales" id="31edo"/><label for="31edo">31EDO</label>
+      <input type="radio" name="scales" id="53edo"/><label for="53edo">53EDO</label>
+      <div id='toggleAudio'>Start</div>
+    </form>
+    <div id='canvasWrapper'>
+      <canvas id='heatmap'></canvas>
+      <canvas id='grid'></canvas>
+    <div>
+  </main>
   <script src='machine.js'></script>
   <script>
 // Page state
@@ -45,9 +84,14 @@ var app = new $.Machine({
       scale: '12edo',
       audioCtx: null,
       flag: null,
-      bins: 20,
       canvas: null,
-      canvasCtx: null
+      canvasCtx: null,
+      gridCanvas: null,
+      gridCtx: null,
+      displayRatio: .8,
+      lastBufLen: null,
+      lastArray: null,
+      lastSampleRate: null
     }),
     scales = {
       '12edo': ['C', 'D♭/C♯', 'D', 'E♭/D♯', 'E', 'F', 'G♭/F♯', 'G', 'A♭/G♯', 'A', 'B♭/A♯', 'B'],
@@ -63,8 +107,8 @@ var app = new $.Machine({
     };
 
 function heatmapColour (val) {
-  let data = [ [0, 29, 72, 119], [64, 27, 138, 90], [128, 251, 176, 33], [192, 246, 136, 56], [255, 238, 62, 50] ];
-  let initIndex = data.findIndex(x => x[0] >= val);
+  let data = [ [0, 29, 72, 119], [64, 27, 138, 90], [128, 251, 176, 33], [192, 246, 136, 56], [255, 238, 62, 50] ],
+      initIndex = data.findIndex(x => x[0] >= val);
   if (data[initIndex][0] === val) return data[initIndex].slice(1);
   else {
     let t = (val - data[initIndex - 1][0]) / (data[initIndex][0] - data[initIndex - 1][0]);
@@ -75,44 +119,58 @@ function heatmapColour (val) {
 $.targets({
   load () {
     app.emit('initCanvas');
-    app.emit('selectScale', $('select#scale')[0].value);
+    app.emit('selectScale', $('#ui > input[type="radio"]:checked')[0].id);
+    app.emit('updateHeatmap');
     for (let i = 0; i < app.state().bins; i++) $.load('row', 'div#bins')
+  },
+  resize () {
+    app.emit('resizeCanvas');
+    app.emit('generateGrid');
   },
   app: {
     initCanvas () {
-      let canvas = this.canvas = $('canvas')[0];
-      canvas.width = document.body.offsetWidth;
-      canvas.height = document.body.offsetHeight - 2 * $('#ui')[0].getBoundingClientRect().height;
-      this.canvasCtx = canvas.getContext('2d');
-      this.canvasCtx.lineWidth = 1
+      this.canvas = $('canvas#heatmap')[0];
+      this.canvasCtx = this.canvas.getContext('2d');
+      this.canvasCtx.lineWidth = 1;
+      this.gridCanvas = $('canvas#grid')[0];
+      this.gridCtx = this.gridCanvas.getContext('2d');
+      app.emit('resizeCanvas')
+    },
+    resizeCanvas () {
+      this.gridCanvas.width = this.canvas.width = document.body.offsetWidth -
+        $('#ui')[0].getBoundingClientRect().width;
+      this.gridCanvas.height = this.canvas.height = document.body.offsetHeight -
+        2 * $('header')[0].getBoundingClientRect().height;
+      if (!this.flag && this.lastBufLen != null)
+        app.emit('updateHeatmap', this.lastBufLen, this.lastArray);
     },
     selectScale (val) {
       this.scale = val;
       pitchClasses = scales[val];
-      app.emit('updateHeatmap')
+      app.emit('generateGrid')
+      if (!this.flag && this.lastBufLen != null)
+        app.emit('updateHeatmap', this.lastBufLen, this.lastArray);
     },
     doAnalyse (s) {
       this.flag = true;
       this.audioCtx = new AudioContext();
       let source = this.audioCtx.createMediaStreamSource(s),
           analyser = this.audioCtx.createAnalyser();
-
       analyser.minDecibels = -90;
       analyser.maxDecibels = -10;
       analyser.smoothingTimeConstant = 0;
-
       analyser.fftSize = 32768;
       source.connect(analyser);
+      this.lastSampleRate = this.audioCtx.sampleRate;
       let bufferLength = analyser.frequencyBinCount,
           dataArray = new Uint8Array(bufferLength),
           loop = () => {
             analyser.getByteFrequencyData(dataArray);
-            let res = dataArray.reduce((a, b, i) =>
-              (a.splice(a.findIndex(x => x[0] < b), 0, [b, i]), a.slice(0, -1)),
-              Array(this.bins + 1).fill([0, -1]));
             app.emit('updateHeatmap', bufferLength, dataArray);
             if (this.flag) requestAnimationFrame(loop);
             else {
+              this.lastBufLen = bufferLength;
+              this.lastArray = dataArray;
               this.audioCtx.close();
               this.audioCtx = null
             }
@@ -120,60 +178,70 @@ $.targets({
       loop()
     },
     finishAnalyse () { this.flag = false },
+    generateGrid () {
+      let { width, height } = this.canvas, { gridCtx, displayRatio } = this,
+          pitchClasses = scales[this.scale];
+      gridCtx.clearRect(0, 0, width, height);
+      gridCtx.font = '18pt Lato';
+      gridCtx.fillStyle = '#ddd';
+      gridCtx.fillText('C10', width * (1 - displayRatio) / 2 - 10 - gridCtx.measureText('C10').width, 24);
+      gridCtx.fillText('C0', width * (1 - displayRatio) / 2 - 10 - gridCtx.measureText('C0').width, height - 4);
+      gridCtx.font = '12pt Lato';
+      for (let i = 0; i <= pitchClasses.length; i++) {
+        gridCtx.fillText(pitchClasses[i % pitchClasses.length],
+          width * (1 - displayRatio) / 2 + width * displayRatio * i / pitchClasses.length -
+          gridCtx.measureText(pitchClasses[i % pitchClasses.length]).width / 2, height - 12);
+      }
+      gridCtx.strokeStyle = '#fff6';
+      gridCtx.beginPath();
+      for (let i = 1; i <= 10; i++) {
+        gridCtx.moveTo(width * (1 - displayRatio) / 2, 28 + i * (height - 56) / 11);
+        gridCtx.lineTo(width * (1 + displayRatio) / 2, 28 + i * (height - 56) / 11);
+      }
+      gridCtx.stroke();
+      for (let i = Math.ceil(-pitchClasses.length * .1); i < pitchClasses.length * 1.1; i++) {
+        if (i < 0 || i >= pitchClasses.length) gridCtx.strokeStyle = '#fff3';
+        else gridCtx.strokeStyle = '#fff6';
+        gridCtx.beginPath();
+        gridCtx.moveTo(width * (1 - displayRatio) / 2 + width * displayRatio * i / pitchClasses.length, 28);
+        gridCtx.lineTo(width * (1 - displayRatio) / 2 + width * displayRatio * i / pitchClasses.length, height - 28);
+        gridCtx.stroke();
+      }
+      gridCtx.strokeStyle = '#fff6';
+      gridCtx.strokeRect(width * (1 - displayRatio) / 2, 28, width * displayRatio, height - 56);
+    },
     updateHeatmap (bufferLength, dataArray) {
-      let { width, height } = this.canvas;
+      let { width, height } = this.canvas, { displayRatio } = this;
       this.canvasCtx.fillStyle = '#1d4877';
       this.canvasCtx.fillRect(0, 0, width, height);
       if (dataArray) {
-        let c = Math.log2(this.audioCtx.sampleRate / bufferLength / 440) +
+        let pitchClasses = scales[this.scale],
+            c = Math.log2(this.lastSampleRate / bufferLength / 440) +
               pitchClasses.indexOf('A') / pitchClasses.length + 4;
         for (let bin = 1; bin < bufferLength; bin++) {
           if (!dataArray[bin]) continue;
           let octave = Math.floor(Math.log2(bin + .5) + c),
               pitch0 = Math.log2(bin) + c - octave,
-              pitch1 = Math.log2(bin + 1) + c - octave,
-              [red, green, blue] = heatmapColour(dataArray[bin]);
-          this.canvasCtx.fillStyle = `rgb(${red}, ${green}, ${blue})`;
-          this.canvasCtx.fillRect(width / 6 + width * 2 / 3 * pitch0, height - 28 - octave * (height - 56) / 11 - .25,
-            width * 2 / 3 * (pitch1 - pitch0) + .5, (height - 56) / 11)
-          if (pitch0 > .9) this.canvasCtx.fillRect(width / 6 + width * 2 / 3 * (pitch0 - 1), height - 28 - (octave + 1) * (height - 56) / 11 - .25,
-            width * 2 / 3 * (pitch1 - pitch0) + .5, (height - 56) / 11)
-          if (pitch1 < .1) this.canvasCtx.fillRect(width / 6 + width * 2 / 3 * (pitch0 + 1), height - 28 - (octave - 1) * (height - 56) / 11 - .25,
-            width * 2 / 3 * (pitch1 - pitch0) + .5, (height - 56) / 11)
+              pitch1 = Math.log2(bin + 1) + c - octave;
+          this.canvasCtx.fillStyle = `rgb(${heatmapColour(dataArray[bin])})`;
+          this.canvasCtx.fillRect(width * (1 - displayRatio) / 2 + width * displayRatio * pitch0,
+            height - 28 - octave * (height - 56) / 11 - .25,
+            width * displayRatio * (pitch1 - pitch0) + .5, (height - 56) / 11)
+          if (pitch0 > .9) this.canvasCtx.fillRect(width * (1 - displayRatio) / 2 + width * displayRatio * (pitch0 - 1),
+            height - 28 - (octave + 1) * (height - 56) / 11 - .25,
+            width * displayRatio * (pitch1 - pitch0) + .5, (height - 56) / 11)
+          if (pitch1 < .1) this.canvasCtx.fillRect(width * (1 - displayRatio) / 2 + width * displayRatio * (pitch0 + 1),
+            height - 28 - (octave - 1) * (height - 56) / 11 - .25,
+            width * displayRatio * (pitch1 - pitch0) + .5, (height - 56) / 11)
         }
       }
-      this.canvasCtx.font = '18pt D-DINExp';
-      this.canvasCtx.fillStyle = '#ddd';
-      this.canvasCtx.fillText('C10', width / 6 - 10 - this.canvasCtx.measureText('C10').width, 24);
-      this.canvasCtx.fillText('C0', width / 6 - 10 - this.canvasCtx.measureText('C0').width, height - 4);
-      this.canvasCtx.font = '12pt D-DINExp';
-      for (let i = 0; i <= pitchClasses.length; i++) {
-        this.canvasCtx.fillText(pitchClasses[i % pitchClasses.length], width / 6 + width * 2 / 3 * i / pitchClasses.length -
-          this.canvasCtx.measureText(pitchClasses[i % pitchClasses.length]).width / 2, height - 12);
-      }
-      this.canvasCtx.strokeStyle = '#fff6';
-      this.canvasCtx.beginPath();
-      for (let i = 1; i <= 10; i++) {
-        this.canvasCtx.moveTo(width / 6, 28 + i * (height - 56) / 11);
-        this.canvasCtx.lineTo(width * 5 / 6, 28 + i * (height - 56) / 11);
-      }
-      this.canvasCtx.stroke();
-      for (let i = Math.ceil(-pitchClasses.length * .1); i < pitchClasses.length * 1.1; i++) {
-        if (i < 0 || i >= pitchClasses.length) this.canvasCtx.strokeStyle = '#fff3';
-        else this.canvasCtx.strokeStyle = '#fff6';
-        this.canvasCtx.beginPath();
-        this.canvasCtx.moveTo(width / 6 + width * 2 / 3 * i / pitchClasses.length, 28);
-        this.canvasCtx.lineTo(width / 6 + width * 2 / 3 * i / pitchClasses.length, height - 28);
-        this.canvasCtx.stroke();
-      }
-      this.canvasCtx.strokeStyle = '#fff6';
-      this.canvasCtx.strokeRect(width / 6, 28, width * 2 / 3, height - 56);
     }
   }
 });
 $.queries({
-  "button#toggle": {
-    click () {
+  "#toggleAudio": {
+    click (e) {
+      e.preventDefault();
       if (this.textContent === 'Start') {
         this.textContent = 'Stop';
         navigator.mediaDevices.getUserMedia({audio: true})
@@ -184,8 +252,8 @@ $.queries({
       }
     }
   },
-  "select#scale": {
-    change () { app.emit('selectScale', this.value) }
+  "#ui > input[type='radio']": {
+    change (e) { if (e.target.checked) app.emit('selectScale', this.id) }
   }
 })
 
